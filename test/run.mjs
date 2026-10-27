@@ -76,7 +76,7 @@ const host = {
   },
 }
 
-const world = definition.create({ dataDir: dir })
+const world = definition.create({ dataDir: dir, cfg: { cnyRate: 7.2 } })
 await world.start(host)
 assert.equal(world.state, 'online')
 
@@ -97,6 +97,18 @@ result = await world.invoke('usage', 'rows', [{ limit: 10 }])
 assert.equal(result.rows.length, 3)
 assert.equal(result.totals.calls, 3)
 
+// the daily panel groups by local date and converts USD to CNY at the configured rate
+const daily = await world.invoke('daily', 'daily', [{ limit: 30 }])
+assert.equal(daily.rate, 7.2)
+assert.equal(daily.days.length, 1)
+const day = daily.days[0]
+assert.equal(day.date, '2026-10-26')
+assert.equal(day.calls, 3)
+assert.ok(Math.abs(day.usd - 0.001429488) < 1e-12)
+assert.ok(Math.abs(day.cny - day.usd * 7.2) < 1e-9)
+assert.ok(daily.total.cny > 0)
+assert.equal(daily.today, null, 'the fixture day is not today')
+
 // a missing file is an error state, not a crash
 const emptyWorld = definition.create({ dataDir: path.join(dir, 'missing') })
 await emptyWorld.start(host)
@@ -104,4 +116,4 @@ assert.equal(emptyWorld.state, 'error')
 
 await world.stop()
 fs.rmSync(dir, { recursive: true, force: true })
-console.log('ok: 读取 usage.jsonl、计价回退、增量追加、缺文件报错')
+console.log('ok: 读取 usage.jsonl、计价回退、增量追加、按天 CNY 汇总、缺文件报错')
