@@ -29,6 +29,17 @@
 
 价目表随 DeepSeek 调整而变，以官网 [Models & Pricing](https://api-docs.deepseek.com/quick_start/pricing) 为准。
 
+
+## 界面：每天花费（CNY）
+
+设置里的 World 页面除了「每次模型调用」，还有一页「每天花费（CNY）」：
+
+- 按**本地日期**汇总每天：调用次数、USD、CNY
+- 顶部：合计人民币、今日人民币、当前汇率
+- 表头固定，列表可上下滚动，每 5 秒刷新
+- 汇率在设置里可改（`worlds.token-cost.cnyRate`，默认 7.2）
+
+CNY 只是按汇率从 USD 换算，不是另一套账单。
 ## 安装
 
 前置：Coopanion（Cortico 6.x）、Node ≥ 22、pnpm。
