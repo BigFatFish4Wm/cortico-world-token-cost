@@ -38,6 +38,14 @@ function fallbackCost(model, cached, miss, output, at) {
   )
 }
 
+function localDateKey(iso) {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const month = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${d.getFullYear()}-${month}-${day}`
+}
+
 function number(value, fallback = 0) {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
 }
@@ -77,12 +85,14 @@ class TokenCostWorld {
   constructor(options = {}) {
     this.id = WORLD_ID
     this.ctx = options.ctx ?? {}
+    this.cfg = options.cfg ?? {}
     this.host = null
     this.state = 'offline'
     this.hint = ''
     this.file = null
     this.offset = 0
     this.rows = []
+    this.daily = new Map()
     this.totals = { calls: 0, input: 0, cached: 0, miss: 0, output: 0, cost: 0, estimated: 0 }
   }
 
@@ -134,6 +144,7 @@ class TokenCostWorld {
     if (stat.size < this.offset) {
       this.offset = 0
       this.rows = []
+      this.daily.clear()
     }
     if (stat.size === this.offset) return
 
@@ -175,20 +186,71 @@ class TokenCostWorld {
       this.totals.output += row.output
       if (typeof row.cost === 'number') this.totals.cost += row.cost
       if (row.estimated) this.totals.estimated += 1
+      const dayKey = localDateKey(row.at)
+      if (dayKey) {
+        const day = this.daily.get(dayKey) ?? { date: dayKey, calls: 0, input: 0, cached: 0, output: 0, usd: 0, estimated: 0 }
+        day.calls += 1
+        day.input += row.input
+        day.cached += row.cached
+        day.output += row.output
+        if (typeof row.cost === 'number') day.usd += row.cost
+        if (row.estimated) day.estimated += 1
+        this.daily.set(dayKey, day)
+      }
     }
     if (this.rows.length > MAX_ROWS) this.rows = this.rows.slice(-MAX_ROWS)
   }
 
+  get cnyRate() {
+    const rate = Number(this.cfg?.cnyRate)
+    return Number.isFinite(rate) && rate > 0 ? rate : 7.2
+  }
+
+  dailySummary() {
+    const days = [...this.daily.values()]
+      .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
+      .map((day) => ({ ...day, cny: day.usd * this.cnyRate }))
+    const total = days.reduce(
+      (acc, day) => ({
+        days: acc.days + 1,
+        calls: acc.calls + day.calls,
+        input: acc.input + day.input,
+        output: acc.output + day.output,
+        usd: acc.usd + day.usd,
+        cny: acc.cny + day.cny,
+      }),
+      { days: 0, calls: 0, input: 0, output: 0, usd: 0, cny: 0 },
+    )
+    return { days, total, rate: this.cnyRate }
+  }
+
   async invoke(panel, method, args) {
-    if (method !== 'rows') return null
-    this.refresh()
-    const limit = Math.min(MAX_ROWS, Math.max(1, Number(args?.[0]?.limit ?? DEFAULT_LIMIT) || DEFAULT_LIMIT))
-    return {
-      rows: this.rows.slice(-limit).reverse(),
-      totals: { ...this.totals },
-      file: this.file,
-      updatedAt: new Date().toISOString(),
+    if (method === 'rows') {
+      this.refresh()
+      const limit = Math.min(MAX_ROWS, Math.max(1, Number(args?.[0]?.limit ?? DEFAULT_LIMIT) || DEFAULT_LIMIT))
+      return {
+        rows: this.rows.slice(-limit).reverse(),
+        totals: { ...this.totals },
+        file: this.file,
+        updatedAt: new Date().toISOString(),
+      }
     }
+    if (method === 'daily') {
+      this.refresh()
+      const limit = Math.min(366, Math.max(1, Number(args?.[0]?.limit ?? 60) || 60))
+      const summary = this.dailySummary()
+      const today = localDateKey(new Date().toISOString())
+      const todayRow = summary.days.find((day) => day.date === today)
+      return {
+        days: summary.days.slice(0, limit),
+        total: summary.total,
+        rate: summary.rate,
+        today: todayRow ? { date: todayRow.date, cny: todayRow.cny, usd: todayRow.usd, calls: todayRow.calls } : null,
+        file: this.file,
+        updatedAt: new Date().toISOString(),
+      }
+    }
+    return null
   }
 
   tools() {
@@ -200,6 +262,8 @@ class TokenCostWorld {
   }
 
   webUi() {
+    const today = this.daily.get(localDateKey(new Date().toISOString()))
+    const todayCny = today ? (today.usd * this.cnyRate).toFixed(2) : '0.00'
     return {
       label: 'Token 用量',
       lamps: [
@@ -212,13 +276,38 @@ class TokenCostWorld {
       badges: [
         { label: '调用', value: this.totals.calls, tone: 'plain' },
         { label: '花费', value: `$${this.totals.cost.toFixed(4)}`, tone: 'plain' },
+        { label: '今日', value: `¥${todayCny}`, tone: 'plain' },
       ],
       panels: [
+        {
+          id: 'daily',
+          title: '每天花费（CNY）',
+          description: '按本地日期汇总：每天的调用次数、tokens、美元与人民币花费；表头固定，列表可上下滚动。',
+          getMethods: ['daily'],
+        },
         {
           id: 'usage',
           title: '每次模型调用',
           description: '时间、模型、输入 / 输出 tokens 与这一条的费用；表头固定，列表可上下滚动。',
           getMethods: ['rows'],
+        },
+      ],
+      config: [
+        {
+          id: 'world:token-cost.main',
+          owner: 'world:token-cost',
+          schema: {
+            type: 'object',
+            title: 'Token 用量',
+            properties: {
+              'worlds.token-cost.cnyRate': {
+                type: 'number',
+                title: 'USD → CNY 汇率',
+                description: '日花费表里用这个汇率把美元换算成人民币，默认 7.2。',
+                'x-hot': true,
+              },
+            },
+          },
         },
       ],
       invoke: (panel, method, args) => this.invoke(panel, method, args),
@@ -229,9 +318,9 @@ class TokenCostWorld {
 export const definition = {
   id: WORLD_ID,
   label: 'Token 用量',
-  defaults: () => ({ enabled: true }),
+  defaults: () => ({ enabled: true, cnyRate: 7.2 }),
   describe: { tools: [], events: [] },
-  create: (ctx) => new TokenCostWorld({ ctx }),
+  create: (ctx) => new TokenCostWorld({ ctx, cfg: ctx?.cfg }),
 }
 
 export default definition
