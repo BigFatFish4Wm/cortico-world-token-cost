@@ -1,6 +1,6 @@
 {
   "name": "cortico-world-token-cost",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Cortico / Coopanion World: a scrollable table of every model call — time, model, tokens in/out and what it cost, read from the deployment's own usage.jsonl.",
   "author": "BigFatWhale",
